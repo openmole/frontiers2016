@@ -188,7 +188,7 @@ val transformedReprojectedHook = CopyFileHook(transformedReprojected,  workDirec
 
 /////////////// ENVIRONMENT(S) DEFINITION //////////////
 
-// val egi = EGIEnvironment("biomed")
+val egi = EGIEnvironment("biomed")
 
 
-(evolution hook savePopulationHook)
+(evolution on egi hook savePopulationHook)
