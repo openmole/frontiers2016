@@ -1,0 +1,215 @@
+val subjectID   = Val[String]
+val subjectFile = Val[File]
+val age         = Val[Int]
+
+
+val brainMask = Val[File]
+val tissueInitialSegmentations = Val[File]
+val tissuePosteriors = Val[File]
+val dofs = Val[File]
+val MADs = Val[File]
+val labels = Val[File]
+val segmentations = Val[File]
+val segmentationsHemispheres = Val[File]
+val segmentationsInitials = Val[File]
+val segmentationsEM = Val[File]
+val posteriors = Val[File]
+
+// val atlasname = "non-rigid-v2"
+val atlasname = "ALBERTs"
+val packagingDirectory = "/homes/am411/vol/MIRTK-develop/MIRTK/Packages/DrawEM/scripts/v1.1"
+val taskWorkDir = "/tmp"
+
+val nbThreads = 4
+
+
+val preprocess = CARETask(workDirectory / "careArchives/drawem-bundle.tgz.bin",
+  packagingDirectory + "/preprocess.sh ${subjectID} ${age}"
+) set (
+  (inputs, outputs) += (subjectID, age),
+  
+  inputFiles  += (subjectFile, "T2/${subjectID}.nii.gz"),
+  
+  outputFiles += ("N4/${subjectID}.nii.gz", subjectFile),
+  outputFiles += ("segmentations-data/brain/${subjectID}_brain_mask.nii.gz", brainMask),
+  
+  customWorkDirectory := taskWorkDir,
+  
+  name := "preprocess"
+)
+
+// phase 1 tissue segmentation
+val tissue_priors = CARETask(workDirectory / "careArchives/drawem-bundle.tgz.bin",
+  packagingDirectory +  "/tissue-priors.sh ${subjectID} ${age} " + s"non-rigid-v2 ${nbThreads}"
+) set (
+  (inputs, outputs) += (subjectID, age),
+  outputs += subjectFile,
+  
+  inputFiles += (subjectFile, "N4/${subjectID}.nii.gz"),
+  
+  outputFiles += ("segmentations-data/tissue-initial-segmentations", tissueInitialSegmentations),
+  outputFiles += ("segmentations-data/tissue-posteriors", tissuePosteriors),
+  outputFiles += ("dofs", dofs),
+  
+  resources += (workDirectory / "parameters", "/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/parameters"),
+  resources += (workDirectory / s"atlases/non-rigid-v2", s"/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/atlases/non-rigid-v2"),
+  
+  customWorkDirectory := taskWorkDir,
+  
+  name := "tissue_priors"
+)
+
+// registration using gm posterior + image
+val register_multi_atlas_using_gm_posteriors = 
+CARETask(workDirectory / "careArchives/drawem-bundle.tgz.bin",
+  packagingDirectory + "/register-multi-atlas-using-gm-posteriors.sh ${subjectID} ${age} " + nbThreads 
+) set (
+  (inputs, outputs) += (subjectID, age),
+  outputs += subjectFile,
+  
+  inputFiles += (subjectFile, "N4/${subjectID}.nii.gz"),
+  inputFiles += (tissuePosteriors, "segmentations-data/tissue-posteriors"),
+  
+  outputFiles += ("dofs", dofs),
+  
+  resources += (workDirectory / "parameters", "/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/parameters"),
+  resources += (workDirectory / s"atlases/ALBERTs", s"/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/atlases/ALBERTs"),
+  
+  name := "register-multi-atlas"
+)
+
+// structural segmentation
+val labels_multi_atlas = 
+CARETask(workDirectory / "careArchives/drawem-bundle.tgz.bin",
+  packagingDirectory + "/labels-multi-atlas.sh ${subjectID}"
+) set (
+  (inputs, outputs) += (subjectID),
+  outputs += subjectFile,
+  
+  inputFiles += (subjectFile, "N4/${subjectID}.nii.gz"),
+  inputFiles += (dofs, "dofs"),
+
+  outputFiles += ("segmentations-data/MADs", MADs),
+  outputFiles += ("segmentations-data/labels", labels),
+  
+  resources += (workDirectory / "parameters", "/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/parameters"),
+  resources += (workDirectory / s"atlases/ALBERTs", s"/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/atlases/ALBERTs"),
+  
+  name := "labelling"
+)
+
+val segmentation = CARETask(workDirectory / "careArchives/drawem-bundle.tgz.bin",
+  packagingDirectory + "/segmentation.sh ${subjectID}"
+) set (
+  (inputs, outputs) += (subjectID),
+  outputs += (MADs, labels),
+  
+  inputFiles += (subjectFile, "N4/${subjectID}.nii.gz"),
+  inputFiles += (MADs, "segmentations-data/MADs"),
+  inputFiles += (labels, "segmentations-data/labels"),
+  
+  outputFiles += ("segmentations", segmentations),
+  outputFiles += ("segmentations-data/posteriors", posteriors),
+
+  resources += (workDirectory / "parameters", "/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/parameters"),
+  
+  name := "segmentation"
+)
+
+// post-processing
+val separate_hemispheres = 
+CARETask(workDirectory / "careArchives/drawem-bundle.tgz.bin",
+  packagingDirectory + "/separate-hemispheres.sh ${subjectID}"
+) set (
+  (inputs, outputs) += (subjectID),
+  outputs += (segmentations),
+
+  inputFiles += (segmentations, "segmentations"),
+  inputFiles += (MADs, "segmentations-data/MADs"),
+  inputFiles += (labels, "segmentations-data/labels"),
+  
+  outputFiles += ("segmentations", segmentationsHemispheres),
+  
+  resources += (workDirectory / "parameters", "/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/parameters")
+)
+
+val correct_segmentation = 
+CARETask(workDirectory / "careArchives/drawem-bundle.tgz.bin",
+  packagingDirectory + "/correct-segmentation.sh ${subjectID}"
+) set (
+  (inputs, outputs) += (subjectID),
+  outputs += (segmentations),
+  outputs += (posteriors),
+  
+  inputFiles += (segmentations, "segmentations"),
+  inputFiles += (segmentationsHemispheres, "segmentations"),
+  // posteriors is transmitted through the previous thanks to the Strain 
+  inputFiles += (posteriors, "segmentations-data/posteriors"),
+
+  resources += (workDirectory / "parameters", "/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/parameters"),
+  name := "correct-segmentation"
+)
+
+val postprocess = CARETask(workDirectory / "careArchives/drawem-bundle.tgz.bin",
+  packagingDirectory + "/postprocess.sh ${subjectID}"
+) set (
+  (inputs, outputs) += (subjectID, posteriors),
+
+  inputFiles += (segmentations, "segmentations"),
+  inputFiles += (labels, "segmentations-data/labels"),
+
+  outputFiles += ("segmentations", segmentations),
+  outputFiles += ("segmentations-data/labels", labels),
+  
+  resources += (workDirectory / "parameters", "/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/parameters"),
+  
+  name := "postprocess"
+)
+
+val postprocessPmaps = CARETask(workDirectory / "careArchives/drawem-bundle.tgz.bin",
+  packagingDirectory + "/postprocess-pmaps.sh ${subjectID}"
+) set (
+  (inputs, outputs) += (subjectID),
+  
+  inputFiles += (posteriors, "segmentations-data/posteriors"),
+  inputFiles += (labels, "segmentations-data/labels"),
+
+  outputFiles += ("posteriors", posteriors),
+  
+  resources += (workDirectory / "parameters", "/vol/medic01/users/am411/MIRTK-develop/MIRTK/Packages/DrawEM/parameters"),
+  
+  name := "postprocess-pmaps"
+)
+
+/// Execution environments configuration
+
+val slurm = SLURMEnvironment("jpassera", "predict5.doc.ic.ac.uk", queue="short")
+val slurmMultiThreads = SLURMEnvironment("jpassera", "predict5.doc.ic.ac.uk", threads = nbThreads)
+val slurmHighMem = SLURMEnvironment("jpassera", "predict5.doc.ic.ac.uk", memory = 30000)
+val condor = CondorEnvironment("jpassera", "hornbeam.doc.ic.ac.uk")
+
+val brainMaskHook = CopyFileHook(brainMask, workDirectory / "results/${subjectID}/brain_mask.nii.gz")
+val labelsHook = CopyFileHook(labels, workDirectory / "results/${subjectID}/labels")
+val segmentationsHook = CopyFileHook(segmentations, workDirectory / "results/${subjectID}/segmentations")
+val posteriorsHook = CopyFileHook(posteriors, workDirectory / "results/${subjectID}/posteriors")
+
+val explo = ExplorationTask(
+  CSVSampling(workDirectory / "ages.csv") set (
+    columns += subjectID,
+    columns += age,
+    separator := ' '
+  ) x 
+  (subjectFile in SelectFileDomain( workDirectory / "T2", "${subjectID}.nii.gz" ))
+)
+
+
+explo -< (preprocess hook (ToStringHook(), brainMaskHook )) -- 
+        (tissue_priors hook ToStringHook()) -- 
+        (register_multi_atlas_using_gm_posteriors hook ToStringHook()) -- 
+        (labels_multi_atlas hook ToStringHook()) -- 
+        (segmentation hook ToStringHook()) -- 
+        Strain(separate_hemispheres hook ToStringHook()) -- 
+        Strain(correct_segmentation hook ToStringHook()) -- 
+        (postprocess hook (ToStringHook(), segmentationsHook, labelsHook) ) --
+        (postprocessPmaps hook (ToStringHook(), posteriorsHook) )
+

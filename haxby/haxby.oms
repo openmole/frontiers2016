@@ -1,0 +1,58 @@
+import java.nio.file.Path
+
+val nilearnDataPath = "/tmp/nilearn_data"
+
+val subjectID = Val[String]
+val C = Val[Double]
+val penalty = Val[String]
+
+val dataFolder = Val[File]
+val resultFile = Val[File]
+val resultFolder = Val[Path]
+val resultFolderName= Val[String]
+
+// destination directory must exist for nilearn to download successfully
+val createDirs = ScalaTask { _ =>
+  File(nilearnDataPath).mkdirs
+  Seq.empty
+}
+
+val download = CARETask(workDirectory / "haxby_example.tgz.bin",
+  s"""python retrieve_haxby.py ${nilearnDataPath}"""
+) set (
+  hostFiles += (nilearnDataPath)
+)
+
+val processing = CARETask(workDirectory / "haxby_example.tgz.bin",
+  s"""python processing.py haxby2001 $${subjectID.split("subj").tail.head} $${C} $${penalty}"""
+) set (
+  (inputs, outputs) += (subjectID, C, penalty),
+  outputFiles += ("classifiers_scores.pkl", resultFile),
+  inputFiles += (dataFolder, "haxby2001/${subjectID}")
+)
+
+val plot = CARETask(workDirectory / "haxby_example.tgz.bin",
+  "python plot.py results/${resultFolderName} results/${resultFolderName}/plot.png"
+) set (
+  inputs += resultFolderName,
+  hostFiles += ((workDirectory / "results").toString, "/home/jopasserat/papers/Frontiers2016/haxby_example/results")
+)
+
+val pickleHook = CopyFileHook(resultFile, workDirectory / "results/subj-${subjectID}/classifiers_scores--C_${C}--penalty_${penalty}.pkl")
+
+val exploData = ExplorationTask (
+  (dataFolder in (File(nilearnDataPath) / "haxby2001") withName subjectID) x
+  (C in List(0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0)) x
+  (penalty in List("l1", "l2"))
+)
+
+val exploResults = ExplorationTask (resultFolder in (workDirectory  / "results").paths withName resultFolderName)
+
+val condor = CondorEnvironment("jpassera", "hornbeam.doc.ic.ac.uk")
+val slurm = SLURMEnvironment("jpassera", "predict5.doc.ic.ac.uk", queue = "short", threads = 4, memory=3000)
+val pbs = PBSEnvironment("jpassera", "login.cx1.hpc.ic.ac.uk", wallTime = 10 minutes, workDirectory = "/work/jpassera/haxby", memory=3000)
+val ssh = SSHEnvironment("jpassera", "hornbeam.doc.ic.ac.uk", 4)
+val egi = EGIEnvironment("biomed")
+val local = LocalEnvironment(4)
+
+createDirs -- download -- exploData -< (processing on slurm hook pickleHook) >- exploResults -< plot

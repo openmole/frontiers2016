@@ -1,0 +1,83 @@
+import java.nio.file.Path
+
+/// Initial exploration task go through all the subject IDs
+val subjectID   = Val[String]
+// val subjectDir  = Val[Path]
+val subjectDir  = Val[String]
+val hemisphere  = Val[String]
+
+val dataDir = "/vol/dhcp-hcp-data/twins_data"
+val scriptsDir = "/vol/medic02/users/sparisot/PBscript"
+
+val csv = CSVSampling("/vol/dhcp-hcp-data/twins_data/monozygotic_to-bedpost.csv") set (
+  columns += subjectDir,
+  columns += subjectID,
+  // ',' is the default separator, but you can specify a different one using
+  separator := ','
+)
+
+// construct the parameter set
+// option 1: from the file system
+// val exploIDsTask = ExplorationTask ( (subjectDir in File(dataDir).paths(filter="^[0-9]{6}")) withName subjectID )
+// option 2: from a CSV
+val exploIDsTask = ExplorationTask ( csv )
+
+
+// construct the parameter set
+val exploHemispheresTask = ExplorationTask ( hemisphere in List("L", "R") ) set (
+  (inputs, outputs) += subjectID
+)
+
+
+/// Bedpostx task: fixed input parameters, only subjectID varying
+// apart from the subjectID, and the script ,
+// no other resources are needed in this case 
+// since the workflow runs on a 
+// cluster with a shared filesystem
+val bpTask   = SystemExecTask(
+  s"${scriptsDir}/run_bedpostx.sh " + "${subjectDir}/diffusion/preprocessed/T1w/Diffusion -n 3 -model 2 --seed=0"
+  ) set (
+    inputs  += (subjectID, subjectDir),
+    outputs += subjectID
+  )
+
+
+/// Pretty similar configuration for pre-Probtrackx task
+val trajectoryTask = SystemExecTask(
+   s"${scriptsDir}/run_maketrajectoryspace.sh $scriptsDir $dataDir " + "${subjectID}"
+  ) set ( 
+    (inputs, outputs) += subjectID
+  )
+
+
+/// Pretty similar configuration for Probtrackx task
+val ptTask = SystemExecTask(
+    // s"$scriptsDir/run_probtrackx.sh $dataDir" + " ${subjectID} ${hemisphere}"
+    s"$scriptsDir/run_probtrackx.sh $scriptsDir $dataDir" + " ${subjectID} ${hemisphere}"
+  ) set (
+    inputs += (subjectID, hemisphere)
+  )
+
+
+/// Execution environments configuration
+
+// cluster environment with GPU computing facilities
+val SLURMgpu =
+SLURMEnvironment(
+    "jpassera",
+    "predict5.doc.ic.ac.uk",
+    queue = "gpus",
+    gres  = List(Gres("gpu", 1)),
+    memory = 15000
+    )
+
+// default cluster environment
+val SLURMcpu =
+SLURMEnvironment(
+    "jpassera",
+    "predict5.doc.ic.ac.uk",
+    memory = 15000
+    )
+
+/// Connect the tasks with transitions and run the workflow
+exploIDsTask -< (bpTask on SLURMgpu hook ToStringHook()) -- trajectoryTask -- exploHemispheresTask -< (ptTask on SLURMcpu)

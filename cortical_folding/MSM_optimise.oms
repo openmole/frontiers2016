@@ -1,0 +1,194 @@
+
+val outputpath = "/tmp/output/CC00172BN08/L.CC00172BN08-CC00099AN18-_maxstep13_smooth_10_MSMstrain_levels_4"
+val MSMBin = "/homes/ecr05/fsldev/src/MSM"
+
+
+
+//////////////// PARAMETERS DEFINITION ///////////////////
+
+// Val[T] are special variable that travel across the pipeline
+// they can be given in in/output of a task and are usually filled by a sampling
+
+// double these ones to fit the needs of the GA to manipulate doubles
+val sigmaIn_opt = Val[Array[Double]]
+val aKNN_opt = Val[Double]
+val iterations_opt = Val[Array[Double]]
+
+val sigmaIn = Val[Array[Int]]
+val aKNN = Val[Int]
+val iterations = Val[Array[Int]]
+val lambdas = Val[Array[Double]]
+
+val configFile = Val[File]
+
+//////////////// OUTPUTS DEFINITION ///////////////////
+
+
+val metric = Val[Double]
+val result = Val[String]
+
+
+val transformedMesh = Val[File]
+val transformedReprojected = Val[File]
+
+
+///////////////// PIPELINE STAGES ///////////////////
+
+
+// i use ScalaTasks to do some quick scripting, usually formatting or
+// any other kind of input preparation
+// here we have two levels of string interpolation (variable substitution)
+//   1. the first s""" will replace outputpath with its content => this happens
+//      when the script is compiled
+//   2. the second s" will interpolate the OpenMOLE variables in outputpath and
+//      replace them with the parameters value => this happens when the script
+//      is run in each task
+val prepareInputs = ScalaTask (s"""
+
+   // creates the whole directory hierarchy contained in the variable, if needed
+   File(s"${outputpath}").getParentFile.mkdirs
+""") set (
+  name := "prepareInputs"
+  )
+
+
+val roundParameters = ScalaTask("""
+  val sigmaIn = sigmaIn_opt.map(_.round.toInt)
+  val aKNN = aKNN_opt.round.toInt
+  val iterations = iterations_opt.map(_.round.toInt)
+"""
+) set (
+  inputs += (sigmaIn_opt, aKNN_opt, iterations_opt),
+  outputs += (sigmaIn, aKNN, iterations),
+  (inputs, outputs) += (lambdas),
+  name := "roundParameters"
+)
+
+
+def generateFile(sigmasIn: Array[Int], lambdas: Array[Double], iterations: Array[Int], aKNN: Int) = {
+  val configFile = File("config.txt")
+
+  configFile.withWriter() { writer =>
+
+    writer.write(s"""
+--sigma_in=${sigmasIn(0)},${sigmasIn(1)},${sigmasIn(2)}
+--sigma_ref=6,4,2
+--lambda=${lambdas(0)},${lambdas(1)},${lambdas(2)}
+--it=${iterations(0)},${iterations(1)},${iterations(2)}
+--aKNN=${aKNN},${aKNN},${aKNN}
+--opt=DISCRETE,DISCRETE,DISCRETE
+--CPgrid=2,3,4
+--SGgrid=4,5,6
+--datagrid=5,5,6
+--regoption=1
+""")
+  }
+  
+  configFile
+}
+
+val generateConfig = ScalaTask { values => 
+  Seq(configFile -> generateFile(values(sigmaIn), values(lambdas), values(iterations), values(aKNN)))
+} set (
+  name := "generateConfigFile",
+  (inputs, outputs) += (lambdas, sigmaIn, aKNN, iterations),
+  outputs += configFile,
+  name := "generateConfigFile"
+)
+
+
+// commands to be found on the remote environment are referred to as on the command line
+// embedded (resources) commands are copied to the work directory and thus require ./
+val msmTask = CARETask(workDirectory / "careArchives/msm_bundle.tgz.bin",
+  s"""${MSMBin}/msm
+  --conf=${outputpath.getParent}/config.txt
+  --inmesh="data/meshA.lh.sphere.asc"
+  --refmesh="data/meshB.lh.sphere.asc"
+  --indata="data/meshA.lh.sphere.txt"
+  --refdata="data/meshB.lh.sphere.txt"
+  --out=${outputpath}
+  --verbose"""
+  ) set (
+    // FIXME sneaky trick to make sure outputpath exists in the archive
+   inputFiles += (configFile, s"${outputpath.getParent}/config.txt"),
+   outputFiles += (s"${outputpath}sphere.reg.surf.gii", transformedMesh),
+   outputFiles += (s"${outputpath}transformed_and_reprojected.func.gii", transformedReprojected),
+   resources += (workDirectory / "data", "data"),
+   name := "msm"
+  )
+
+
+val fitness = CARETask(
+  workDirectory / "careArchives/msm_bundle.tgz.bin",
+  s"""/homes/ecr05/fsldev/src/MSM/estimate_metric_distortion
+  meshA.lh.sphere.asc
+  transformedmesh.gii
+  areal_distortion.func.gii
+  -abs""") set (
+    stdOut := result,
+    inputFiles += (transformedMesh, "transformedmesh.gii"),
+    resources += (workDirectory / "data/meshA.lh.sphere.asc", "meshA.lh.sphere.asc"),
+    name := "fitness-distortion"
+  )
+
+
+
+// TODO check whether 99 is a good enough penalty in case of failure
+val parseResult = ScalaTask("""
+import scala.util.Try
+val metric = result.split('\n').
+                    reverse.
+                    headOption.
+                    flatMap(_.split('=').reverse.headOption).
+                    flatMap(x => Try(x.toDouble).toOption).
+                    getOrElse(99.0)
+""") set (
+  inputs += result,
+  outputs += metric,
+  
+  name := "parseResults"
+  )
+
+
+val wholeFitness = roundParameters -- generateConfig -- Strain(prepareInputs) -- msmTask -- fitness -- parseResult
+
+// Define the population size: 100.
+// Define the inputs and their respective variation bounds.
+// Define the objectives to minimize.
+// Define the fitness evaluation
+// Define the parallelism level
+// Terminate after 1000 evaluations
+val evolution =
+  SteadyStateEvolution(
+    // Define the population (10) and the number of generations (100).
+    // Define the inputs and their respective variation bounds.
+    // Define the objectives to minimize.
+    algorithm =
+      NSGA2(
+        mu = 100,
+        genome = Seq(
+          Sequence(lambdas, 0.00001, 100.0, size=3),
+          Sequence(sigmaIn_opt, 2.0, 10.0, size=3),
+          Sequence(iterations_opt, 3.0, 50.0, size=3),
+          aKNN_opt in (5.0, 50.0)
+          ),
+        objectives = Seq(metric)
+      ),
+    evaluation = wholeFitness,
+    parallelism = 10,
+    termination = 100
+  )
+
+/////////////// OUTPUT FILES RETRIEVAL ////////////////
+
+val savePopulationHook = SavePopulationHook(evolution, workDirectory / "calibration")
+val transformedHook = CopyFileHook(transformedMesh, workDirectory / "results/transformed_mesh.gii")
+val transformedReprojectedHook = CopyFileHook(transformedReprojected,  workDirectory / "results/transformed_and_reprojected.func.gii")
+
+
+/////////////// ENVIRONMENT(S) DEFINITION //////////////
+
+// val egi = EGIEnvironment("biomed")
+
+
+(evolution hook savePopulationHook)
