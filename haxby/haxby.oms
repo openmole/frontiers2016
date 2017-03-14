@@ -38,10 +38,10 @@ val plot = CARETask(workDirectory / "haxby_example.tgz.bin",
   hostFiles += ((workDirectory / "results").toString, "/home/jopasserat/papers/Frontiers2016/haxby_example/results")
 )
 
-val pickleHook = CopyFileHook(resultFile, workDirectory / "results/subj-${subjectID}/classifiers_scores--C_${C}--penalty_${penalty}.pkl")
+val pickleHook = CopyFileHook(resultFile, workDirectory / "results/${subjectID}/classifiers_scores--C_${C}--penalty_${penalty}.pkl")
 
 val exploData = ExplorationTask (
-  (dataFolder in (File(nilearnDataPath) / "haxby2001") withName subjectID) x
+  (dataFolder in (File(nilearnDataPath) / "haxby2001").files(filter = "subj.") withName subjectID) x
   (C in List(0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0)) x
   (penalty in List("l1", "l2"))
 )
@@ -49,10 +49,10 @@ val exploData = ExplorationTask (
 val exploResults = ExplorationTask (resultFolder in (workDirectory  / "results").paths withName resultFolderName)
 
 val condor = CondorEnvironment("jpassera", "hornbeam.doc.ic.ac.uk")
-val slurm = SLURMEnvironment("jpassera", "predict5.doc.ic.ac.uk", queue = "short", threads = 4, memory=3000)
+val slurm = SLURMEnvironment("jpassera", "predict5.doc.ic.ac.uk", queue = "short", threads = 1, memory=3000)
 val pbs = PBSEnvironment("jpassera", "login.cx1.hpc.ic.ac.uk", wallTime = 10 minutes, workDirectory = "/work/jpassera/haxby", memory=3000)
-val ssh = SSHEnvironment("jpassera", "hornbeam.doc.ic.ac.uk", 4)
+val ssh = SSHEnvironment("jpassera", "basswood.doc.ic.ac.uk", 4)
 val egi = EGIEnvironment("biomed")
 val local = LocalEnvironment(4)
 
-createDirs -- download -- exploData -< (processing on slurm hook pickleHook) >- exploResults -< plot
+createDirs -- download -- exploData -< (processing on egi hook pickleHook) >- exploResults -< plot

@@ -189,6 +189,6 @@ val transformedReprojectedHook = CopyFileHook(transformedReprojected,  workDirec
 /////////////// ENVIRONMENT(S) DEFINITION //////////////
 
 val egi = EGIEnvironment("biomed")
+val ssh = SSHEnvironment("jpassera", "basswood.doc.ic.ac.uk", 4)
 
-
-(evolution on egi hook savePopulationHook)
+(evolution on ssh hook savePopulationHook)
